@@ -10,3 +10,6 @@
 [submodule "tools/faust2ck"]
 	path = tools/faust2ck
 	url = https://github.com/ccrma/faust2ck
+[submodule "tools/physicalModeling/mesh2faust/spectra"]
+	path = tools/physicalModeling/mesh2faust/spectra
+	url = git@github.com:yixuan/spectra.git
