@@ -128,6 +128,24 @@ string m2f::mesh2faust(
         cout << "\n";
     }
 
+    // Compute the damping matrix C = alpha * M + beta * K
+    double alpha = 0.1; // Replace with your specific value
+    double beta = 0.2; // Replace with your specific value
+    Eigen::SparseMatrix<double> C = alpha * M + beta * K;
+
+    Eigen::VectorXd dampingRatios(femNModes);
+    for (int i = 0; i < femNModes; ++i) {
+        Eigen::VectorXd v = eigenVectors.col(femNModes - i - 1);
+        double vCv = v.transpose() * C * v;
+        double Kv = v.transpose() * K * v;
+        double Mv = v.transpose() * M * v;
+        cout << "vCv: " << vCv << "\n";
+        cout << "Kv: " << Kv << "\n";
+        cout << "Mv: " << Mv << "\n";
+        dampingRatios(i) = vCv / (2 * std::sqrt(Kv * Mv));
+    }
+    dampingRatios.normalize();
+
     /////////////////////////////////////
     // COMPUTE GAINS
     /////////////////////////////////////
@@ -145,7 +163,7 @@ string m2f::mesh2faust(
     /////////////////////////////////////
 
     stringstream dspStream;
-    dspStream << "import(\"stdfaust.lib\");\n\n"
+    dspStream << "import(\"stdfaust.lib\");\nimport(\"math.lib\");\n\n"
               << args.modelName << "(" << (args.freqControl ? "freq," : "")
               << "exPos,t60,t60DecayRatio,t60DecaySlope) = _ <: "
                  "par(i,nModes,pm.modeFilter(modesFreqs(i),modesT60s(i),"
@@ -192,9 +210,41 @@ string m2f::mesh2faust(
         }
         if (i < args.nExPos - 1) dspStream << ",";
     }
-    dspStream << "},int(p*nModes+n) : rdtable" << (args.freqControl ? " : select2(modesFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n"
-              << "modesT60s(i) = t60*pow(1-(" << (args.freqControl ? "modesFreqRatios(i)" : "modesFreqs(i)") << "/" << (modesFreqs[highestModeIndex] / (args.freqControl ? modesFreqs[lowestModeIndex] : 1.f)) << ")*t60DecayRatio,t60DecaySlope);\n"
-              << "};\n";
+    dspStream << "},int(p*nModes+n) : rdtable" << (args.freqControl ? " : select2(modesFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
+
+    dspStream << "dampingRatios(i) = ba.take(i+1,(";
+    for (int i = 0; i < targetNModes; i++) {
+        dspStream << dampingRatios(lowestModeIndex + i);
+        if (i < targetNModes - 1) dspStream << ",";
+    }
+    dspStream << "));\n";
+
+    bool rayleighDamping = true;
+    // dspStream << "modesT60s(i) = ba.take(i+1,(";
+    // for (int i = 0; i < targetNModes; i++) {
+    //     double modeT60 = 0;
+    //     if (rayleighDamping) {
+    //         modesT60 = std::log(1000) / (2 * M_PI * modesFreqs(i) * sqrt(1 - pow(dampingRatios(i), 2)));
+    //     } else {
+    //         double t60 = 16;
+    //         double t60DecayRatio = 0.8;
+    //         double t60DecaySlope = 2.5;
+    //         modeT60 = t60 * pow(1 - ((modesFreqs[lowestModeIndex + i] / modesFreqs[lowestModeIndex]) / (modesFreqs[highestModeIndex] / modesFreqs[lowestModeIndex])) * t60DecayRatio, t60DecaySlope);
+    //     }
+    //     dspStream << modeT60;
+    //     if (i < targetNModes - 1) dspStream << ",";
+    // }
+    // dspStream << "));\n";
+
+    string freq = (args.freqControl ? "modesFreqRatios(i)" : "modesFreqs(i)") + string("/") + std::to_string(modesFreqs[highestModeIndex] / (args.freqControl ? modesFreqs[lowestModeIndex] : 1.f));
+    if (rayleighDamping) {
+        // modesT60 = std::log(1000) / (2 * M_PI * modesFreqs(i) * sqrt(1 - pow(dampingRatios(i), 2)));
+        dspStream << "modesT60s(i) = log(1000.0) / (2.0 * PI * (" << freq << ") * sqrt(1 - pow(dampingRatios(i), 2)));\n";
+    } else {
+        dspStream << "modesT60s(i) = t60*pow(1-(" << freq << ")*t60DecayRatio,t60DecaySlope);\n";
+    }
+
+    dspStream << "};\n";
 
     return dspStream.str();
 }
